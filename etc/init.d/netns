@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+
+. /etc/netns.conf
+
+lognetns()
+{
+	sed "s/^/$(date +'%F %X'): /" | tee -a /var/log/netns.log
+}
+
+if [ "$1" = "start" ]; then
+	echo "Setting up netns" | lognetns
+	sysctl -q net.ipv4.ip_forward=1 |& lognetns
+	ip netns add $NSNAME |& lognetns
+	ip link add veno0 type veth peer name $VIFACE |& lognetns
+	ip link set $VIFACE netns $NSNAME |& lognetns
+	ip addr add 10.0.0.1/24 dev veno0 |& lognetns
+	ip netns exec $NSNAME ip addr add 10.0.0.2/24 dev $VIFACE |& lognetns
+	ip link set veno0 up |& lognetns
+	ip netns exec $NSNAME ip link set $VIFACE up |& lognetns
+
+	ip netns exec $NSNAME ip route add default via 10.0.0.1 dev $VIFACE |& lognetns
+	ip netns exec $NSNAME ip addr add 127.0.0.1 dev lo |& lognetns
+	ip netns exec $NSNAME ip link set lo up |& lognetns
+
+	iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 0.0.0.0/0 -j MASQUERADE |& lognetns
+	echo "netns settup finished" | lognetns
+elif [ "$1" = "stop" ]; then
+	echo "Stopping netns" |& lognetns
+	ip link set veno0 down |& lognetns
+	ip netns delete $NSNAME |& lognetns
+	ip link delete veno0 |& lognetns
+fi

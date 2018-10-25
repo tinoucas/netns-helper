@@ -1,0 +1,12 @@
+[Unit]
+Description=VPN Unlimited daemon through netns
+Requires=netns-cmdpipe.service
+
+[Service]
+Environment="LD_PRELOAD=libcurl-openssl-1.0.so"
+ExecStart=/etc/init.d/vpn-unlimited start
+ExecStop=/etc/init.d/vpn-unlimited stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

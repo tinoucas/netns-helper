@@ -1,0 +1,21 @@
+#!/bin/zsh
+
+ENVFILE="$1"
+
+if [ -z "$ENVFILE" ] || ! [ -e "$ENVFILE" ]; then
+	echo "Usage: $($0 envfile)"
+	echo "envfile can be created with 'env > envfile'"
+	exit 1
+fi
+
+ENVVARSET=$(cat "$ENVFILE" | while read VAR ; do echo export $VAR ; done)
+
+UNSETVARS=$(env | while read CURENV ; do
+	ENVVAR=$(echo $CURENV | cut -d= -f1)
+	if [ -z "$(echo $ENVVARSET | grep $ENVVAR)" ]; then
+		echo "unset $ENVVAR"
+	fi
+done)
+
+echo $ENVVARSET
+echo $UNSETVARS

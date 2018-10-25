@@ -1,0 +1,82 @@
+#!/bin/zsh
+
+$(readconf /etc/netns.conf)
+CMDPIPE=$NETNSDIR/cmdpipe
+
+# possible commands:
+#allowvpnonly
+#allowall
+
+OUTPIPE="$NETNSDIR/$(id -u).cmd.$$.stdout"
+ERRPIPE="$NETNSDIR/$(id -u).cmd.$$.stderr"
+SILENT=
+
+while getopts "s" opt; do
+	case "${opt}" in
+		s)
+			SILENT=y
+			;;
+		*)
+			echo "Unkown sitch ${opt}"
+			;;
+	esac
+done
+shift $((OPTIND-1))
+
+if ! [ -e "$CMDPIPE" ]; then
+	PROCEED=
+	if ! [ -e "$BYPASSNETNS" ]; then
+		if [ -n "$SILENT" ]; then
+			exit 0
+		fi
+		if [ -t 1 ]; then
+			echo "netns not running."
+			echo -n "launch anyway? [y]an "
+			read PROCEED
+			if [ "$PROCEED" = "n" ]; then
+				exit 1
+			fi
+		else
+			gxmessage -button 'Cancel:1,Launch:0,Bypass until reboot:2' -default "Cancel" -title "netns not running" -center -geometry 400x200 "$*"
+			PROCEED=$?
+		fi
+		case $PROCEED in
+			1|n)
+				exit 1
+				;;
+			0|y)
+				;;
+			2|a)
+				touch "$BYPASSNETNS"
+				;;
+		esac
+	fi
+	exec $*
+fi
+
+env > "$NETNSDIR/env.$(id -un)"
+
+rm -f "$OUTPIPE" "$ERRPIPE"
+
+mkfifo $OUTPIPE
+mkfifo $ERRPIPE
+
+CMD=$1
+for i in `seq 2 $#` ; do
+	ARG=$(eval echo \$$i)
+	CMD="$CMD \"$ARG\""
+done
+cat $ERRPIPE >&2 &
+cat $OUTPIPE &
+
+killme()
+{
+	OUTPIPE=$1
+	shift
+	echo "$(id -u):$PWD:$OUTPIPE:KILLME:$*" > "$CMDPIPE"
+}
+
+trap "killme $OUTPIPE $CMD" INT TERM QUIT
+echo "$(id -u):$PWD:$OUTPIPE:$ERRPIPE:$CMD" > "$CMDPIPE"
+wait
+

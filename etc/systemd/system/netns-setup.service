@@ -1,0 +1,13 @@
+[Unit]
+Description=Simple static network
+Requires=network.service
+After=network.service
+
+[Service]
+ExecStart=/etc/init.d/netns start
+ExecStop=/etc/init.d/netns stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

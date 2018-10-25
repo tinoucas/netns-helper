@@ -1,0 +1,35 @@
+#!/bin/zsh
+
+$(readconf /etc/netns.conf)
+
+PIPEFILE=$NETNSDIR/cmdpipe
+PIDFILE=$(dirname $PIPEFILE).pid
+
+COMMAND=$1
+
+if [ "$COMMAND" = "start" ]; then
+	echo "Starting netns command pipe."
+	mkdir -p $(dirname $PIPEFILE)
+	chgrp netns $(dirname $PIPEFILE)
+	chmod g+w $(dirname $PIPEFILE)
+	if ! [ -p $PIPEFILE ]; then
+		mkfifo $PIPEFILE
+	fi
+	chgrp netns $PIPEFILE
+	chmod 660 $PIPEFILE
+	$(dirname $0)/../../usr/lib/netns-cmdpipe-listen $PIPEFILE &
+	echo $! > $PIDFILE
+elif [ "$COMMAND" = "stop" ]; then
+	if [ -e "$PIDFILE" ]; then
+		echo "Stopping netns command pipe."
+		rm $PIPEFILE
+		wait $(cat $PIDFILE)
+		kill $(cat $PIDFILE)
+		rm -f $PIDFILE
+	else
+		echo "netns command pipe not started."
+	fi
+elif [ "$COMMAND" = "restart" ]; then
+	$0 stop
+	$0 start
+fi

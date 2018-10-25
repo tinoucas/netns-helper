@@ -1,0 +1,80 @@
+#!/bin/zsh
+
+$(readconf /etc/netns.conf)
+
+PIPEFILE="$1"
+PIPEDIR="$(dirname $PIPEFILE)"
+LOGSYSTEMD=0
+
+lognetns()
+{
+	if [ "$LOGSYSTEMD" = "1" ]; then
+		sed "s/^/$(date +'%F %X'): /" | tee -a /var/log/netns.log
+	else
+		sed "s/^/$(date +'%F %X'): /" >> /var/log/netns.log
+	fi
+}
+
+getVpnIp()
+{
+	ip netns exec $NSNAME netstat -rn | grep $VIFACE | grep UGH | cut -d' ' -f1
+}
+
+allowonlyvpn()
+{
+	VPNSERVER="$(getVpnIp)"
+
+	if [ -n "$VPNSERVER" ]; then
+		echo "Blocking all except trafic to vpn ($VPNSERVER)" | lognetns
+		iptables -t nat -F POSTROUTING
+		iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d $VPNSERVER -j MASQUERADE
+		echo "done"
+	else
+		echo "Not connected to vpn" | lognetns
+	fi
+}
+
+allowall()
+{
+	echo "Allowing all connections through netns" | lognetns
+	iptables -t nat -F POSTROUTING
+	iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 0.0.0.0/0 -j MASQUERADE
+}
+
+touch "$BYPASSNETNS"
+ip netns exec $NSNAME echo -n && rm -f "$BYPASSNETNS"
+
+INIT=
+
+while [ -p "$PIPEFILE" ] ; do
+	CMDLINE="$(cat "$PIPEFILE")"
+	CMDUID=$(echo $CMDLINE | cut -f1 -d:)
+	CMDCWD=$(echo $CMDLINE | cut -f2 -d:)
+	OUTPIPE=$(echo $CMDLINE | cut -f3 -d:)
+	ERRPIPE=$(echo $CMDLINE | cut -f4 -d:)
+	CMD=$(echo $CMDLINE | cut -f5- -d:)
+	CMDUSERNAME=$(id -un $CMDUID)
+	ENVFILE="$PIPEDIR/env.$CMDUSERNAME"
+	if [ -z "$INIT" ]; then
+		INIT="$(allowonlyvpn)"
+	fi
+	if [ "$(groups $CMDUSERNAME | tr ' ' '\n' | grep netns)" = "netns" ]; then
+		if [ "$ERRPIPE" = "KILLME" ]; then
+			CMDPID="$(cat ${OUTPIPE}.pid)"
+			echo "netns killing '$CMD' as '$CMDUSERNAME'" |& lognetns
+			su $CMDUSERNAME -c "kill $CMDPID"
+		elif [ "$CMD" = "allowall" ]; then
+			allowall
+		elif [ "$CMD" = "allowvpnonly" ]; then
+			allowonlyvpn
+		else
+			echo "netns running '$CMD' as '$CMDUSERNAME'" |& lognetns
+			nohup ip netns exec $NSNAME su $CMDUSERNAME -c "$(readenv $ENVFILE) ; cd '$CMDCWD' ; $CMD > $OUTPIPE 2> $ERRPIPE & echo \$! > ${OUTPIPE}.pid ; wait ; rm -f $ERRPIPE $OUTPIPE" &
+			sleep 0.1
+			CMDPID=$(cat ${OUTPIPE}.pid)
+			echo "netns command PID: $CMDPID" | lognetns
+		fi
+	else
+		echo "$CMDUSERNAME is not in netns group" |& lognetns
+	fi
+done

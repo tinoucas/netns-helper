@@ -1,0 +1,13 @@
+#!/bin/zsh
+
+CONFFILE="$1"
+
+if [ -z "$CONFFILE" ] || ! [ -e "$CONFFILE" ]; then
+	echo "Usage: \$($0 conffile)"
+	echo "conffile can be created with 'echo VAR=\"value\" > conffile'"
+	exit 1
+fi
+
+ENVVARSET=$(cat "$CONFFILE" | while read VAR ; do echo export $VAR ; done)
+
+echo $ENVVARSET

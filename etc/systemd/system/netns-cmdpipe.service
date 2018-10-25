@@ -1,0 +1,12 @@
+[Unit]
+Description=Command pipe to execute through netns
+Requires=netns-setup.service
+
+[Service]
+ExecStart=/etc/init.d/netns-cmdpipe start
+ExecStop=/etc/init.d/netns-cmdpipe stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
