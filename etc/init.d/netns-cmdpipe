@@ -9,22 +9,28 @@ COMMAND=$1
 
 if [ "$COMMAND" = "start" ]; then
 	echo "Starting netns command pipe."
-	mkdir -p $(dirname $PIPEFILE)
-	chgrp netns $(dirname $PIPEFILE)
-	chmod g+w $(dirname $PIPEFILE)
+	mkdir -p $(dirname $PIPEFILE)/pipes
+	chgrp netns $(dirname $PIPEFILE){,/pipes}
+	chmod g+w $(dirname $PIPEFILE){,/pipes}
 	if ! [ -p $PIPEFILE ]; then
 		mkfifo $PIPEFILE
 	fi
 	chgrp netns $PIPEFILE
 	chmod 660 $PIPEFILE
-	$(dirname $0)/../../usr/lib/netns-cmdpipe-listen $PIPEFILE &
-	echo $! > $PIDFILE
+	echo $$ > "$PIDFILE"
+
+	while [ -e "$PIDFILE" ]; do
+		/usr/lib/netns-cmdpipe-listen "$PIPEFILE"
+		echo "Restarting netns-cmdpipe"
+		ps u | wc -l
+	done
 elif [ "$COMMAND" = "stop" ]; then
 	if [ -e "$PIDFILE" ]; then
 		echo "Stopping netns command pipe."
-		rm $PIPEFILE
+		if [ -e "$PIPEFILE" ]; then
+			rm $PIPEFILE ${PIPEFILE}.[0-9]*
+		fi
 		wait $(cat $PIDFILE)
-		kill $(cat $PIDFILE)
 		rm -f $PIDFILE
 	else
 		echo "netns command pipe not started."
