@@ -1,0 +1,44 @@
+#!/bin/zsh
+
+NSNAME="$1"
+shift
+CMDUSERNAME="$1"
+shift
+ENVFILE="$1"
+shift
+CALLERTTY="$1"
+shift
+INPIPE="$1"
+shift
+CMD="$1"
+shift
+
+lognetns()
+{
+	if [ "$LOGSYSTEMD" = "1" ]; then
+		sed "s/^/$(date +'%F %X'): /" | tee -a /var/log/netns.log
+	else
+		sed "s/^/$(date +'%F %X'): /" >> /var/log/netns.log
+	fi
+}
+
+if [ -z "$NSNAME" ]; then
+	IPNETNS=
+else
+	IPNETNS="ip netns exec $NSNAME su $CMDUSERNAME -c "
+fi
+
+#echo "$0: $CMD" |& lognetns
+
+cat <<EOF | eval "${IPNETNS}zsh" >/dev/null
+$(readenv $ENVFILE)
+cd '$CMDCWD'
+if [ -c "$CALLERTTY" ] && [ -e "$INPIPE" ]; then
+    cat '$INPIPE' | script -qaf '$CALLERTTY' -c '$CMD ; rm -f $INPIPE ${INPIPE}.pid' &
+else
+	exec 3> $CALLERTTY
+	( \$SHELL -c '$CMD' >$CALLERTTY 2>$CALLERTTY ; exec 3>&- ; rm -f $INPIPE ${INPIPE}.pid $CALLERTTY ) &
+fi
+echo \$! > ${INPIPE}.pid
+exit 0
+EOF

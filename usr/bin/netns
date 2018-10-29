@@ -7,24 +7,24 @@ CMDPIPE=$NETNSDIR/cmdpipe
 #allowvpnonly
 #allowall
 
-OUTPIPE="$NETNSDIR/$(id -u).cmd.$$.stdout"
-ERRPIPE="$NETNSDIR/$(id -u).cmd.$$.stderr"
+INPIPE="$NETNSDIR/pipes/$(id -u).cmd.$$.stdin"
+OUTPIPE="$NETNSDIR/pipes/$(id -u).cmd.$$.stdin"
 SILENT=
 
-while getopts "s" opt; do
-	case "${opt}" in
-		s)
-			SILENT=y
-			;;
-		*)
-			echo "Unkown sitch ${opt}"
-			;;
-	esac
-done
-shift $((OPTIND-1))
+#while getopts "s" opt; do
+#    case "${opt}" in
+#        s)
+#            SILENT=y
+#            ;;
+#        *)
+#            echo "Unkown sitch ${opt}"
+#            ;;
+#    esac
+#done
+#shift $((OPTIND-1))
 
 if ! [ -e "$CMDPIPE" ]; then
-	PROCEED=
+	PROCEED=y
 	if ! [ -e "$BYPASSNETNS" ]; then
 		if [ -n "$SILENT" ]; then
 			exit 0
@@ -36,9 +36,6 @@ if ! [ -e "$CMDPIPE" ]; then
 			if [ "$PROCEED" = "n" ]; then
 				exit 1
 			fi
-		else
-			gxmessage -button 'Cancel:1,Launch:0,Bypass until reboot:2' -default "Cancel" -title "netns not running" -center -geometry 400x200 "$*"
-			PROCEED=$?
 		fi
 		case $PROCEED in
 			1|n)
@@ -49,6 +46,9 @@ if ! [ -e "$CMDPIPE" ]; then
 			2|a)
 				touch "$BYPASSNETNS"
 				;;
+			*)
+				exit 1
+				;;
 		esac
 	fi
 	exec $*
@@ -56,27 +56,61 @@ fi
 
 env > "$NETNSDIR/env.$(id -un)"
 
-rm -f "$OUTPIPE" "$ERRPIPE"
+rm -f "$INPIPE"
+mkfifo $INPIPE
 
-mkfifo $OUTPIPE
-mkfifo $ERRPIPE
+CURRENTTTY=$(tty)
+OUTPUT="$CURRENTTTY"
+
+if ! [ -t 1 ] || ! [ -c "$OUTPUT" ]; then
+	rm -f "$OUTPIPE"
+	mkfifo "$OUTPIPE"
+	OUTPUT="$OUTPIPE"
+fi
+
+
+while [ "$(echo $1 | sed 's/^\(.\).*$/\1/g')" = "-" ]; do
+	echo "$(id -u):$PWD:$INPIPE::$1" > "$CMDPIPE"
+	shift
+done
 
 CMD=$1
 for i in `seq 2 $#` ; do
 	ARG=$(eval echo \$$i)
 	CMD="$CMD \"$ARG\""
 done
-cat $ERRPIPE >&2 &
-cat $OUTPIPE &
 
 killme()
 {
-	OUTPIPE=$1
-	shift
-	echo "$(id -u):$PWD:$OUTPIPE:KILLME:$*" > "$CMDPIPE"
+	INPIPE=$1
+	CMDPID="$(cat ${INPIPE}.pid)"
+	kill -9 $CMDPID
+	if [ -z "$(ps uh $CMDPID)" ]; then 
+		rm -f ${INPIPE}{,.pid}
+		! [ -c $OUTPUT ] && rm $OUTPUT
+		kill -TERM $$
+	fi
 }
 
-trap "killme $OUTPIPE $CMD" INT TERM QUIT
-echo "$(id -u):$PWD:$OUTPIPE:$ERRPIPE:$CMD" > "$CMDPIPE"
-wait
-
+trap "killme $INPIPE $CMD" INT
+echo "$(id -u):$PWD:$INPIPE:$OUTPUT:$CMD" > "$CMDPIPE"
+CMDDONE=
+if [ -c "$OUTPUT" ]; then
+		stty -echo
+		while [ -z "$CMDDONE" ]; do
+			if read -r -t 1 -k 1 CHAR; then
+				echo -n $CHAR > "$INPIPE"
+			fi
+			if [ -e "${INPIPE}.pid" ]; then
+				CMDPID="$(cat ${INPIPE}.pid)"
+				if [ -n "$CMDPID" ] && [ -z "$(ps uh $CMDPID)" ]; then
+					CMDDONE=y
+				fi
+			else
+				CMDDONE=y
+			fi
+		done
+else
+	cat $OUTPIPE
+fi
+rm -f "${INPIPE}.pid" "${INPIPE}"

@@ -5,6 +5,8 @@ $(readconf /etc/netns.conf)
 PIPEFILE="$1"
 PIPEDIR="$(dirname $PIPEFILE)"
 LOGSYSTEMD=0
+USER_PROCESS="netns-user"
+USER_PROCESS_PATH="/usr/lib/$USER_PROCESS"
 
 lognetns()
 {
@@ -20,61 +22,96 @@ getVpnIp()
 	ip netns exec $NSNAME netstat -rn | grep $VIFACE | grep UGH | cut -d' ' -f1
 }
 
+allowall()
+{
+	echo "Allowing all netns connections" | lognetns
+	iptables -t nat -F POSTROUTING
+	iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 0.0.0.0/0 -j MASQUERADE
+}
+
 allowonlyvpn()
 {
 	VPNSERVER="$(getVpnIp)"
 
-	if [ -n "$VPNSERVER" ]; then
-		echo "Blocking all except trafic to vpn ($VPNSERVER)" | lognetns
-		iptables -t nat -F POSTROUTING
+	echo "Blocking all netns trafic" | lognetns
+	iptables -t nat -F POSTROUTING
+	if [ -n "$VPNSERVER" ] && [ "$(echo $VPNSERVER | wc -l)" = "1" ]; then
+		echo "Allowing traffic to vpn server ($VPNSERVER)" | lognetns
 		iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d $VPNSERVER -j MASQUERADE
-		echo "done"
-	else
-		echo "Not connected to vpn" | lognetns
+		echo "done" | lognetns
 	fi
 }
 
-allowall()
+networkblocked()
 {
-	echo "Allowing all connections through netns" | lognetns
-	iptables -t nat -F POSTROUTING
-	iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -d 0.0.0.0/0 -j MASQUERADE
+	VPNSERVER="$(getVpnIp)"
+	MASQUERADE="$(iptables -w 5 -t nat -L | grep MASQUERADE)"
+
+	ALLOWALL="$(echo "$MASQUERADE" | grep " 0.0.0.0/24\|anywhere" | wc -l)"
+	ALLOWVPN="$(echo "$MASQUERADE" | grep -v " 0.0.0.0/24\|anywhere" | wc -l)"
+
+	if [ -z "$VPNSERVER" ] && [ "$ALLOWALL" != 1 ]; then
+		return 0
+	elif [ -n "$VPNSERVER" ] && [ "$ALLOWALL" != 1 ] && [ "$ALLOWVPN" != 1 ]; then
+		return 0
+	fi
+	return 1
+}
+
+forwardToClient()
+{
+	CMDUID="$1"
+	CLIENTUSERNAME="$2"
+	CMDLINE="$3"
+	USERCMDPIPE="${PIPEFILE}.$CMDUID"
+	if [ "$(for i in $(pgrep "$USER_PROCESS") ; do ps uh $i ; done | cut -d' ' -f1 | grep "$CLIENTUSERNAME" | wc -l)" = "0" ]; then
+		if ! [ -p "$USERCMDPIPE" ]; then
+			mkfifo "$USERCMDPIPE"
+		fi
+		chown "$CLIENTUSERNAME" "$USERCMDPIPE"
+		ip netns exec "$NSNAME" su "$CMDUSERNAME" -c "$USER_PROCESS_PATH $USERCMDPIPE" |& lognetns &
+	fi
+	echo $CMDLINE > "$USERCMDPIPE"
 }
 
 touch "$BYPASSNETNS"
 ip netns exec $NSNAME echo -n && rm -f "$BYPASSNETNS"
 
-INIT=
-
 while [ -p "$PIPEFILE" ] ; do
 	CMDLINE="$(cat "$PIPEFILE")"
 	CMDUID=$(echo $CMDLINE | cut -f1 -d:)
 	CMDCWD=$(echo $CMDLINE | cut -f2 -d:)
-	OUTPIPE=$(echo $CMDLINE | cut -f3 -d:)
-	ERRPIPE=$(echo $CMDLINE | cut -f4 -d:)
+	INPIPE=$(echo $CMDLINE | cut -f3 -d:)
+	CALLERTTY=$(echo $CMDLINE | cut -f4 -d:)
 	CMD=$(echo $CMDLINE | cut -f5- -d:)
 	CMDUSERNAME=$(id -un $CMDUID)
 	ENVFILE="$PIPEDIR/env.$CMDUSERNAME"
-	if [ -z "$INIT" ]; then
-		INIT="$(allowonlyvpn)"
-	fi
 	if [ "$(groups $CMDUSERNAME | tr ' ' '\n' | grep netns)" = "netns" ]; then
-		if [ "$ERRPIPE" = "KILLME" ]; then
-			CMDPID="$(cat ${OUTPIPE}.pid)"
+		if [ "$CALLERTTY" = "KILLME" ]; then
 			echo "netns killing '$CMD' as '$CMDUSERNAME'" |& lognetns
-			su $CMDUSERNAME -c "kill $CMDPID"
-		elif [ "$CMD" = "allowall" ]; then
+			if [ "$CMDUID" != "$UID" ]; then
+				forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
+			else
+				su $CMDUSERNAME -c "kill $(cat "${INPIPE}.pid")"
+			fi
+		elif [ "$CMD" = "--allowall" ]; then
 			allowall
-		elif [ "$CMD" = "allowvpnonly" ]; then
+		elif [ "$CMD" = "--allowvpnonly" ]; then
 			allowonlyvpn
-		else
-			echo "netns running '$CMD' as '$CMDUSERNAME'" |& lognetns
-			nohup ip netns exec $NSNAME su $CMDUSERNAME -c "$(readenv $ENVFILE) ; cd '$CMDCWD' ; $CMD > $OUTPIPE 2> $ERRPIPE & echo \$! > ${OUTPIPE}.pid ; wait ; rm -f $ERRPIPE $OUTPIPE" &
-			sleep 0.1
-			CMDPID=$(cat ${OUTPIPE}.pid)
-			echo "netns command PID: $CMDPID" | lognetns
+		elif networkblocked ; then
+			NETWORKBLOCKED="netns command skipped: network blocked"
+			echo "$NETWORKBLOCKED" |& lognetns
+			nohup "$(dirname "$0")/netns-launch" "" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "echo $NETWORKBLOCKED" >/dev/null 2>/dev/null &
+		elif [ -n "$CMD" ]; then
+			if [ "$CMDUID" != "$UID" ]; then
+				forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
+			else
+				nohup "$(dirname "$0")/netns-launch" "$NSNAME" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "$CMD" >/dev/null 2>/dev/null &
+			fi
 		fi
 	else
-		echo "$CMDUSERNAME is not in netns group" |& lognetns
+		echo "echo \"$CMDUSERNAME is not in netns group\"" | script -qaf "$CALLERTTY" -c sh |& lognetns
+		rm -f $INPIPE
+		! [ -c $CALLERTTY ] && rm -f $CALLERTTY
 	fi
 done
