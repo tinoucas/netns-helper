@@ -1,6 +1,6 @@
 [Unit]
 Description=Command pipe to execute through netns
-Requires=netns-setup.service
+After=netns-setup.service
 
 [Service]
 ExecStart=/etc/init.d/netns-cmdpipe start
