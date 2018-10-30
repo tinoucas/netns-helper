@@ -3,7 +3,7 @@
 ENVFILE="$1"
 
 if [ -z "$ENVFILE" ] || ! [ -e "$ENVFILE" ]; then
-	echo "Usage: $($0 envfile)" >&2
+	echo "Usage: \$($0 envfile)" >&2
 	echo "envfile can be created with 'env > envfile'" >&2
 	exit 1
 fi
