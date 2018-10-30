@@ -78,40 +78,44 @@ touch "$BYPASSNETNS"
 ip netns exec $NSNAME echo -n && rm -f "$BYPASSNETNS"
 
 while [ -p "$PIPEFILE" ] ; do
-	CMDLINE="$(cat "$PIPEFILE")"
-	CMDUID=$(echo $CMDLINE | cut -f1 -d:)
-	CMDCWD=$(echo $CMDLINE | cut -f2 -d:)
-	INPIPE=$(echo $CMDLINE | cut -f3 -d:)
-	CALLERTTY=$(echo $CMDLINE | cut -f4 -d:)
-	CMD=$(echo $CMDLINE | cut -f5- -d:)
-	CMDUSERNAME=$(id -un $CMDUID)
-	ENVFILE="$PIPEDIR/env.$CMDUSERNAME"
-	if [ "$(groups $CMDUSERNAME | tr ' ' '\n' | grep netns)" = "netns" ]; then
-		if [ "$CALLERTTY" = "KILLME" ]; then
-			echo "netns killing '$CMD' as '$CMDUSERNAME'" |& lognetns
-			if [ "$CMDUID" != "$UID" ]; then
-				forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
-			else
-				su $CMDUSERNAME -c "kill $(cat "${INPIPE}.pid")"
+	INPUT="$(cat "$PIPEFILE")"
+	while [ -n "$INPUT" ]; do
+		CMDLINE="$(echo "$INPUT" | head -n 1)"
+		INPUT="$(echo "$INPUT" | tail -n +2)"
+		CMDUID=$(echo $CMDLINE | cut -f1 -d:)
+		CMDCWD=$(echo $CMDLINE | cut -f2 -d:)
+		INPIPE=$(echo $CMDLINE | cut -f3 -d:)
+		CALLERTTY=$(echo $CMDLINE | cut -f4 -d:)
+		CMD=$(echo $CMDLINE | cut -f5- -d:)
+		CMDUSERNAME=$(id -un $CMDUID)
+		ENVFILE="$PIPEDIR/env.$CMDUSERNAME"
+		if [ "$(groups $CMDUSERNAME | tr ' ' '\n' | grep netns)" = "netns" ]; then
+			if [ "$CALLERTTY" = "KILLME" ]; then
+				echo "netns killing '$CMD' as '$CMDUSERNAME'" |& lognetns
+				if [ "$CMDUID" != "$UID" ]; then
+					forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
+				else
+					su $CMDUSERNAME -c "kill $(cat "${INPIPE}.pid")"
+				fi
+			elif [ "$CMD" = "--allowall" ]; then
+				allowall
+			elif [ "$CMD" = "--allowvpnonly" ]; then
+				allowonlyvpn
+			elif networkblocked ; then
+				NETWORKBLOCKED="netns command skipped: network blocked"
+				echo "$NETWORKBLOCKED" |& lognetns
+				nohup "$(dirname "$0")/netns-launch" "" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "echo $NETWORKBLOCKED" >/dev/null 2>/dev/null &
+			elif [ -n "$CMD" ]; then
+				if [ "$CMDUID" != "$UID" ]; then
+					forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
+				else
+					nohup "$(dirname "$0")/netns-launch" "$NSNAME" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "$CMD" >/dev/null 2>/dev/null &
+				fi
 			fi
-		elif [ "$CMD" = "--allowall" ]; then
-			allowall
-		elif [ "$CMD" = "--allowvpnonly" ]; then
-			allowonlyvpn
-		elif networkblocked ; then
-			NETWORKBLOCKED="netns command skipped: network blocked"
-			echo "$NETWORKBLOCKED" |& lognetns
-			nohup "$(dirname "$0")/netns-launch" "" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "echo $NETWORKBLOCKED" >/dev/null 2>/dev/null &
-		elif [ -n "$CMD" ]; then
-			if [ "$CMDUID" != "$UID" ]; then
-				forwardToClient "$CMDUID" "$CMDUSERNAME" "$CMDLINE"
-			else
-				nohup "$(dirname "$0")/netns-launch" "$NSNAME" "$CMDUSERNAME" "$ENVFILE" "$CALLERTTY" "$INPIPE" "$CMD" >/dev/null 2>/dev/null &
-			fi
+		else
+			echo "echo \"$CMDUSERNAME is not in netns group\"" | script -qaf "$CALLERTTY" -c sh |& lognetns
+			rm -f $INPIPE
+			! [ -c $CALLERTTY ] && rm -f $CALLERTTY
 		fi
-	else
-		echo "echo \"$CMDUSERNAME is not in netns group\"" | script -qaf "$CALLERTTY" -c sh |& lognetns
-		rm -f $INPIPE
-		! [ -c $CALLERTTY ] && rm -f $CALLERTTY
-	fi
+	done
 done
